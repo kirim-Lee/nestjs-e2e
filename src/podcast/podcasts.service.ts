@@ -70,6 +70,7 @@ export class PodcastsService {
         { id },
         { relations: ['episodes'] },
       );
+
       if (!podcast) {
         return {
           ok: false,
