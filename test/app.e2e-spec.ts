@@ -6,14 +6,18 @@ import { getConnection, Repository } from 'typeorm';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Podcast } from 'src/podcast/entities/podcast.entity';
 import { Episode } from 'src/podcast/entities/episode.entity';
+import { User } from 'src/users/entities/user.entity';
 
 describe('App (e2e)', () => {
   let app: INestApplication;
   let podcastRepository: Repository<Podcast>;
   let episodeRepository: Repository<Episode>;
+  let userRepository: Repository<User>;
+  let token: string;
 
   const baseTest = () => request(app.getHttpServer()).post('/graphql');
   const publicTest = (query: string) => baseTest().send({ query });
+  const privateTest = (query: string) => publicTest(query).set('X-JWT', token);
 
   beforeAll(async () => {
     const moduleFixture = await Test.createTestingModule({
@@ -23,6 +27,7 @@ describe('App (e2e)', () => {
     app = moduleFixture.createNestApplication();
     podcastRepository = moduleFixture.get(getRepositoryToken(Podcast));
     episodeRepository = moduleFixture.get(getRepositoryToken(Episode));
+    userRepository = moduleFixture.get(getRepositoryToken(User));
     await app.init();
   });
 
@@ -407,7 +412,7 @@ describe('App (e2e)', () => {
           });
       });
 
-      it('should success podcast', () => {
+      it('should success delete podcast', () => {
         return publicTest(`mutation{
           deletePodcast(input: {id: ${id}}) {
             ok
@@ -427,10 +432,227 @@ describe('App (e2e)', () => {
   });
 
   describe('Users Resolver', () => {
-    it.todo('me');
-    it.todo('seeProfile');
-    it.todo('createAccount');
-    it.todo('login');
-    it.todo('editProfile');
+    const EMAIL = 'ttt@ttt.com';
+    const PASSWORD = '12345';
+
+    describe('createAccount', () => {
+      it('should success create account', () => {
+        return publicTest(`mutation{
+          createAccount(input:{email:"${EMAIL}", password: "${PASSWORD}", role: Listener}) {
+            ok
+            error
+          }
+        }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.createAccount.ok).toBeTruthy();
+            expect(res.body.data.createAccount.error).toBeNull();
+          });
+      });
+
+      it('should not create account if email is not unique', () => {
+        return publicTest(`mutation{
+          createAccount(input:{email:"${EMAIL}", password: "${PASSWORD}", role: Listener}) {
+            ok
+            error
+          }
+        }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.createAccount.ok).toBeFalsy();
+            expect(res.body.data.createAccount.error).toBe(
+              'There is a user with that email already',
+            );
+          });
+      });
+    });
+
+    describe('login', () => {
+      it('should success login', () => {
+        return publicTest(`mutation {
+          login(input: {email:"${EMAIL}", password: "${PASSWORD}"}){
+            ok
+            error
+            token
+          }
+        }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.login.ok).toBeTruthy();
+            expect(res.body.data.login.token).toEqual(expect.any(String));
+            expect(res.body.data.login.error).toBeNull();
+
+            token = res.body.data.login.token;
+          });
+      });
+
+      it('should fail login if email is not exist', () => {
+        return publicTest(`mutation {
+            login(input: {email:"noexist@com.com", password: "${PASSWORD}"}){
+              ok
+              error
+              token
+            }
+          }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.login.ok).toBeFalsy();
+            expect(res.body.data.login.token).toBeNull();
+            expect(res.body.data.login.error).toBe('User not found');
+          });
+      });
+
+      it('should fail login if password not correct', () => {
+        return publicTest(`mutation {
+            login(input: {email:"${EMAIL}", password: "password"}){
+              ok
+              error
+              token
+            }
+          }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.login.ok).toBeFalsy();
+            expect(res.body.data.login.token).toBeNull();
+            expect(res.body.data.login.error).toBe('Wrong password');
+          });
+      });
+    });
+
+    describe('me', () => {
+      it('return me', () => {
+        return privateTest(`query{
+          me {
+            email
+            role
+          }
+        }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.me.email).toBe(EMAIL);
+            expect(res.body.data.me.role).toBe('Listener');
+          });
+      });
+
+      it('should not allow logged user', () => {
+        return publicTest(`query{
+              me{
+                email
+              }
+            }`)
+          .set('X-JWT', 'wrongToken')
+          .expect(200)
+          .expect(res => {
+            const {
+              body: { errors, data },
+            } = res;
+            expect(errors[0].message).toBe('Forbidden resource');
+            expect(data).toBeNull();
+          });
+      });
+    });
+
+    describe('seeProfile', () => {
+      let userId: number;
+
+      beforeAll(async () => {
+        const user = await userRepository.find();
+        userId = user[0].id;
+      });
+
+      it('should return profile', () => {
+        return privateTest(`query{
+          seeProfile(userId:${userId}){
+            ok
+            error
+            user {
+              id
+              email
+            }
+          }
+        }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.seeProfile.ok).toBeTruthy();
+            expect(res.body.data.seeProfile.error).toBeNull();
+            expect(res.body.data.seeProfile.user.email).toEqual(
+              expect.any(String),
+            );
+            expect(res.body.data.seeProfile.user.id).toBe(userId);
+          });
+      });
+
+      it('should return error if userId is not exist', () => {
+        return privateTest(`query{
+          seeProfile(userId: 1000) {
+            ok
+            error
+            user{
+              id
+              email
+            }
+          }
+        }`)
+          .expect(200)
+          .expect(res => {
+            expect(res.body.data.seeProfile.ok).toBeFalsy();
+            expect(res.body.data.seeProfile.error).toBe('User Not Found');
+            expect(res.body.data.seeProfile.user).toBeNull();
+          });
+      });
+
+      it('should not return value when sending wrong jwt', () => {
+        return publicTest(`query{
+          seeProfile(userId:${userId}){
+            ok
+            error
+            user {
+              id
+              email
+            }
+          }
+        }`)
+          .set('X-JWT', 'wrongToken')
+          .expect(200)
+          .expect(res => {
+            const {
+              body: { data, errors },
+            } = res;
+
+            expect(data).toBeNull();
+            expect(errors[0].message).toBe('Forbidden resource');
+          });
+      });
+    });
+
+    describe('editProfile', () => {
+      const newEmail = 'change@change.com';
+
+      it('should success edit profile', () => {
+        return privateTest(`mutation {
+          editProfile(input: {email:"${newEmail}"}){
+            ok
+            error
+          }
+        }`)
+          .expect(200)
+          .expect(async res => {
+            const {
+              body: {
+                data: {
+                  editProfile: { ok, error },
+                },
+              },
+            } = res;
+            expect(ok).toBeTruthy();
+            expect(error).toBeNull();
+          });
+      });
+
+      it('should return after email change', async () => {
+        const user = await userRepository.findOne({ email: newEmail });
+        expect(user).not.toBeNull();
+      });
+    });
   });
 });
